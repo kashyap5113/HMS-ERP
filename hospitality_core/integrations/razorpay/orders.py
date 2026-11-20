@@ -187,7 +187,7 @@ def supersede_unpaid(reservation=None, sales_invoice=None, keep=None):
             frappe.db.set_value(TXN, name, {"status": "Cancelled", "failure_reason": _("Superseded by a newer payment request")})
 
 
-def website_advance_request(reservation):
+def website_advance_request(reservation, amount=None):
     """Called by the public booking API after a single-room booking. Returns public payment info or None."""
     s = client.get_settings()
     if not (s.enabled and cint(s.allow_website_advance)):
@@ -196,7 +196,14 @@ def website_advance_request(reservation):
         client.get_credentials(s)  # configured & test-mode keys, else no online payment offered
     except client.GatewayDisabled:
         return None
-    res, amount = advance_due(reservation, s)
+    res, calc_amount = advance_due(reservation, s)
+    if amount is not None and flt(amount) > 0:
+        # Allow user to specify custom advance amount up to the reservation estimated total
+        total = flt(frappe.db.get_value("Hotel Reservation", reservation, "estimated_total"))
+        amount = min(flt(amount), total)
+    else:
+        amount = calc_amount
+
     if amount <= 0:
         return None
     existing = frappe.get_all(TXN, filters={"hotel_reservation": reservation, "scenario": "Reservation Advance",
@@ -205,6 +212,9 @@ def website_advance_request(reservation):
     required = (s.website_payment_policy == "Required")
     if existing:
         txn = frappe.get_doc(TXN, existing[0])
+        if flt(txn.amount) != flt(amount):
+            txn.amount = amount
+            txn.save(ignore_permissions=True)
         token = rotate_token(txn)
     else:
         txn, token = _new_txn(s, "Reservation Advance", "Website", amount, settings_currency(s), customer=res.customer,

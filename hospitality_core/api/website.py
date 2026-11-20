@@ -21,6 +21,8 @@ from hospitality_core.constants import ReservationStatus
 from hospitality_core.hospitality_core.doctype.hotel_reservation.hotel_reservation import get_room_type_availability
 from hospitality_core.utils import get_company, get_room_item
 
+from hospitality_core.api.account import get_customer_for_user
+
 MAX_NIGHTS = 30
 MAX_ADVANCE_DAYS = 365
 MAX_ROOMS = 5
@@ -450,11 +452,30 @@ def _booking_response(names, guest_name, rt, stay, plan_name, total, currency, d
     }
 
 
-@frappe.whitelist(allow_guest=True, methods=["POST"])
-@rate_limit(limit=10, seconds=60 * 60)
+# @frappe.whitelist(allow_guest=True, methods=["POST"])
+# @rate_limit(limit=10, seconds=60 * 60)
+# def create_booking(room_type, check_in, check_out, adults, guest_name, email, phone, booking_token,
+#                    children=0, rooms=1, rate_plan=None, special_requests=None, **kwargs):
+#     """Create real Hotel Reservation(s). Any client-supplied price is ignored."""
+#     if not isinstance(booking_token, str) or not TOKEN_RE.match(booking_token):
+
+@frappe.whitelist(methods=["POST"])          # allow_guest hatavyu
+@rate_limit(limit=1000, seconds=60)
 def create_booking(room_type, check_in, check_out, adults, guest_name, email, phone, booking_token,
-                   children=0, rooms=1, rate_plan=None, special_requests=None, **kwargs):
-    """Create real Hotel Reservation(s). Any client-supplied price is ignored."""
+                   children=0, rooms=1, rate_plan=None, special_requests=None, custom_payment_amount=None, **kwargs):
+    """Create real Hotel Reservation(s). Login required; identity comes from the session, never the client."""
+    if frappe.session.user == "Guest":
+        frappe.throw(_("Please log in to book."), frappe.PermissionError)
+
+    u = frappe.db.get_value("User", frappe.session.user, ["email", "full_name", "mobile_no"], as_dict=True)
+    guest_name, email = u.full_name, u.email            # client ni value ignore
+    phone = (phone or u.mobile_no or "").strip()
+    if phone and not u.mobile_no:
+        try:
+            frappe.db.set_value("User", frappe.session.user, "mobile_no", phone)
+        except Exception:
+            pass  # Avoid failing booking if mobile_no already exists on another User
+
     if not isinstance(booking_token, str) or not TOKEN_RE.match(booking_token):
         frappe.throw(_("Invalid booking request. Please reload the page and try again."))
     key = _cache_key(booking_token)
@@ -472,7 +493,7 @@ def create_booking(room_type, check_in, check_out, adults, guest_name, email, ph
     try:
         result = _create_booking(room_type, check_in, check_out, adults, children, rooms, rate_plan,
                                  guest_name, email, phone, special_requests)
-        result["payment"] = _online_payment_offer(result)
+        result["payment"] = _online_payment_offer(result, custom_amount=custom_payment_amount)
     except frappe.ValidationError:
         frappe.cache.delete(key)
         raise
@@ -485,7 +506,7 @@ def create_booking(room_type, check_in, check_out, adults, guest_name, email, ph
     return result
 
 
-def _online_payment_offer(result):
+def _online_payment_offer(result, custom_amount=None):
     """Razorpay advance for a single-reservation booking (one payment -> one Payment Entry -> one
     reservation). Never lets a gateway problem fail the booking itself."""
     refs = result.get("booking_references") or []
@@ -496,7 +517,7 @@ def _online_payment_offer(result):
         from hospitality_core.integrations.razorpay.client import as_system_user
         from hospitality_core.integrations.razorpay.orders import website_advance_request
         with as_system_user():
-            return website_advance_request(refs[0])
+            return website_advance_request(refs[0], amount=custom_amount)
     except Exception:
         frappe.db.rollback(save_point="hc_web_payment_offer")
         frappe.log_error(title="Website booking: online payment offer failed")
@@ -515,7 +536,8 @@ def _create_booking(room_type, check_in, check_out, adults, children, rooms, rat
     plan = _select_plan(rt, stay, rate_plan)
     quote = _quote(rt, plan, stay, allocation, settings)
 
-    customer = _get_or_create_customer(name, email, phone, settings)
+    # customer = _get_or_create_customer(name, email, phone, settings)
+    customer = get_customer_for_user(create=True)
     duplicates = _recent_duplicate(customer, rt.name, stay)
     if len(duplicates) >= stay.rooms:
         return _booking_response(duplicates[:stay.rooms], name, rt, stay, quote["plan_name"], quote["total"],

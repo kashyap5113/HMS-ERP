@@ -14,7 +14,9 @@ frappe.ui.form.on("Hotel Payment Gateway Settings", {
 	},
 
 	refresh(frm) {
-		frm.disable_save(false);
+		// frm.disable_save(false);
+
+		
 		hpg_render_dashboard(frm);
 		hpg_buttons(frm);
 		if (frm.doc.environment !== "Live") {

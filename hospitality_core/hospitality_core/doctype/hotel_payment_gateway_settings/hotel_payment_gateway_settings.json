@@ -1,6 +1,6 @@
 {
  "actions": [],
- "creation": "2026-11-17 12:00:00.000000",
+ "creation": "2026-11-17 12:00:00",
  "description": "Razorpay payment gateway configuration for Hospitality Core",
  "doctype": "DocType",
  "engine": "InnoDB",
@@ -81,6 +81,7 @@
    "description": "Only Test Mode is available. Live Mode requires a separate Administrator-approved activation.",
    "fieldname": "environment",
    "fieldtype": "Select",
+   "in_list_view": 1,
    "label": "Environment",
    "options": "Test\nLive",
    "reqd": 1
@@ -301,8 +302,9 @@
   }
  ],
  "issingle": 1,
+ "link_display_mode": "Search",
  "links": [],
- "modified": "2026-11-17 12:00:00.000000",
+ "modified": "2026-11-19 13:40:37.593425",
  "modified_by": "Administrator",
  "module": "Hospitality Core",
  "name": "Hotel Payment Gateway Settings",
@@ -318,6 +320,7 @@
    "write": 1
   },
   {
+   "create": 1,
    "print": 1,
    "read": 1,
    "role": "Accounts Manager",

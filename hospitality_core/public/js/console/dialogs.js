@@ -358,6 +358,9 @@ Object.assign(FrontDeskConsole.prototype, {
 
     dialog_checkout(res) {
         const me = this;
+        const RECORD = __("Cash / Card / Bank");
+        const ONLINE = __("Razorpay Online Checkout");
+
         FD.call("hospitality_core.api.console.get_bill_preview", { reservation_name: res }, { freeze: true }).then((b) => {
             const due = Math.max(b.balance || 0, 0);
             const d = FD.dialog({
@@ -365,6 +368,14 @@ Object.assign(FrontDeskConsole.prototype, {
                 fields: [
                     { fieldtype: "HTML", fieldname: "bill" },
                     { fieldtype: "Section Break", label: due > 0 ? __("Settle Outstanding Now") : "" , hidden: due > 0 ? 0 : 1 },
+                    { fieldtype: "Select", fieldname: "pay_method", label: __("Settlement Method"), options: [RECORD, ONLINE], default: RECORD,
+                      onchange() {
+                          const isOnline = d.get_value("pay_method") === ONLINE;
+                          d.set_df_property("mode", "hidden", isOnline);
+                          d.set_df_property("reference", "hidden", isOnline);
+                          d.get_primary_btn().text(isOnline ? __("Initiate Razorpay & Check Out") : __("Confirm Check Out & Invoice"));
+                      }
+                    },
                     { fieldtype: "Currency", fieldname: "amount", label: __("Collect Amount"), default: due },
                     { fieldtype: "Column Break" },
                     { fieldtype: "Link", fieldname: "mode", label: __("Mode of Payment"), options: "Mode of Payment", default: me.state.settings.default_advance_mode },
@@ -372,6 +383,13 @@ Object.assign(FrontDeskConsole.prototype, {
                 ],
                 primary_action_label: __("Confirm Check Out & Invoice"),
                 primary_action(v) {
+                    if (due > 0 && v.amount > 0 && v.pay_method === ONLINE) {
+                        d.hide();
+                        return me.start_online_payment({ reservation: res }, v.amount, b.customer_name).then(() => {
+                            me.dialog_checkout(res);
+                        });
+                    }
+
                     const collect = due > 0 && v.amount > 0 ? { amount: v.amount, mode: v.mode, reference: v.reference } : null;
                     if (collect && !v.mode) { frappe.msgprint(__("Select the Mode of Payment.")); return; }
                     return FD.call("hospitality_core.api.console.check_out", { reservation_name: res, collect_payment: collect },

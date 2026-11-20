@@ -120,6 +120,20 @@ frappe.ui.form.on("Hotel Reservation", {
     render_buttons(frm) {
         if (frm.is_new()) return;
 
+        // Razorpay Payment Button for Desk staff
+        if (frm.doc.status === "Reserved" || frm.doc.status === "Checked In") {
+            frappe.call({
+                method: "hospitality_core.api.razorpay.get_front_desk_config",
+                silent: true
+            }).then((r) => {
+                const c = r.message || {};
+                if (!c.front_desk) return;
+                frm.add_custom_button(__("Pay via Razorpay"), () => {
+                    frm.trigger("show_razorpay_dialog");
+                }, __("Payment"));
+            }).catch(() => {});
+        }
+
         if (frm.doc.status === "Reserved") {
             frm.add_custom_button(__("Check In"), () => {
                 hospitality_core_checkin_dialog(frm.doc.name, () => frm.reload_doc());
@@ -229,5 +243,98 @@ frappe.ui.form.on("Hotel Reservation", {
                 d.show();
             }
         });
+    },
+
+    show_razorpay_dialog(frm) {
+        frappe.call({
+            method: "hospitality_core.hospitality_core.doctype.hotel_reservation.hotel_reservation.get_billing_summary",
+            args: { reservation_name: frm.doc.name }
+        }).then((b) => {
+            const summary = b.message || {};
+            const def_amount = summary.balance > 0 ? summary.balance : summary.estimated_total;
+            const d = new frappe.ui.Dialog({
+                title: __("Razorpay Payment · {0}", [frm.doc.name]),
+                fields: [
+                    { fieldtype: "Data", fieldname: "customer", label: __("Customer"), default: frm.doc.customer, read_only: 1 },
+                    { fieldtype: "Currency", fieldname: "amount", label: __("Amount"), reqd: 1, default: def_amount },
+                ],
+                primary_action_label: __("Create Payment Request"),
+                primary_action(v) {
+                    if (!(v.amount > 0)) {
+                        frappe.msgprint(__("Please enter an amount greater than zero."));
+                        return;
+                    }
+                    const key = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now());
+                    frappe.call({
+                        method: "hospitality_core.api.razorpay.create_reservation_payment_request",
+                        args: { reservation: frm.doc.name, amount: v.amount, idempotency_key: key },
+                        freeze: true
+                    }).then((r) => {
+                        d.hide();
+                        frm.trigger("show_razorpay_checkout_modal", r.message);
+                    });
+                }
+            });
+            d.show();
+        });
+    },
+
+    show_razorpay_checkout_modal(frm, r) {
+        const t = r.transaction;
+        const esc = frappe.utils.escape_html;
+        let done = false;
+        const d = new frappe.ui.Dialog({
+            title: __("Razorpay Payment · {0}", [t.name]),
+            fields: [{ fieldtype: "HTML", fieldname: "h" }],
+            primary_action_label: __("Open Checkout"),
+            primary_action: () => window.open(r.pay_url, "hc_rzp_checkout", "popup,width=520,height=760"),
+            secondary_action_label: __("Cancel Request"),
+            secondary_action: () => {
+                frappe.confirm(__("Cancel this payment request?"), () => {
+                    frappe.call({
+                        method: "hospitality_core.api.razorpay.cancel_payment_request",
+                        args: { name: t.name }
+                    }).then(() => {
+                        d.hide();
+                        frm.reload_doc();
+                    });
+                });
+            }
+        });
+
+        d.fields_dict.h.$wrapper.html(`
+            <div class="text-center">${r.qr_svg ? `<div style="display:inline-block;background:#fff;padding:8px;border-radius:8px">${r.qr_svg}</div>` : ""}</div>
+            <div class="input-group mt-3">
+                <input class="form-control" readonly value="${esc(r.pay_url)}">
+                <button class="btn btn-default hc-copy">${__("Copy Link")}</button>
+            </div>
+            <div class="mt-3 text-center">
+                <span class="indicator-pill blue hc-status">${__("Waiting for payment…")}</span>
+            </div>
+        `);
+
+        d.$wrapper.find(".hc-copy").on("click", () => frappe.utils.copy_to_clipboard(r.pay_url));
+
+        const timer = setInterval(() => {
+            frappe.call({
+                method: "hospitality_core.api.razorpay.get_transaction_status",
+                args: { name: t.name },
+                silent: true
+            }).then((s) => {
+                const st = s.message.status;
+                d.$wrapper.find(".hc-status").text(__(st))
+                    .toggleClass("green", st === "Reconciled")
+                    .toggleClass("red", st === "Failed");
+                if (st === "Reconciled" && !done) {
+                    done = true;
+                    clearInterval(timer);
+                    frappe.show_alert({ message: __("Payment confirmed and recorded!"), indicator: "green" });
+                    frm.reload_doc();
+                }
+            });
+        }, 4000);
+
+        d.onhide = () => clearInterval(timer);
+        d.show();
     }
 });
